@@ -1,0 +1,495 @@
+head	1.10;
+access;
+symbols;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2012.04.12.14.59.09;	author ghost;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	2012.04.09.16.25.33;	author ghost;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2008.12.10.07.05.08;	author ghost;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2008.09.15.07.43.45;	author ghost;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2008.09.11.05.16.48;	author ghost;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2008.07.15.04.36.27;	author ghost;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2008.07.12.20.57.53;	author ghost;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2008.07.12.02.41.21;	author ghost;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2008.07.10.12.32.26;	author ghost;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2008.07.10.09.20.10;	author ghost;	state Exp;
+branches;
+next	;
+
+
+desc
+@echo-3.0.c
+@
+
+
+1.10
+log
+@Add license.
+@
+text
+@/* $Id: echo-3.0.c,v 1.9 2012/04/09 16:25:33 ghost Exp $ */
+
+/*-
+ * Copyright (c) 2012 Joseph Kong.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the author nor the names of any co-contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#include <sys/param.h>
+#include <sys/module.h>
+#include <sys/kernel.h>
+#include <sys/systm.h>
+
+#include <sys/conf.h>
+#include <sys/uio.h>
+#include <sys/malloc.h>
+#include <sys/ioccom.h>
+
+MALLOC_DEFINE(M_ECHO, "echo_buffer", "buffer for echo driver");
+
+#define ECHO_CLEAR_BUFFER	_IO('E', 1)
+#define ECHO_SET_BUFFER_SIZE	_IOW('E', 2, int)
+
+static d_open_t		echo_open;
+static d_close_t	echo_close;
+static d_read_t		echo_read;
+static d_write_t	echo_write;
+static d_ioctl_t	echo_ioctl;
+
+static struct cdevsw echo_cdevsw = {
+	.d_version =	D_VERSION,
+	.d_open =	echo_open,
+	.d_close =	echo_close,
+	.d_read =	echo_read,
+	.d_write =	echo_write,
+	.d_ioctl =	echo_ioctl,
+	.d_name =	"echo"
+};
+
+typedef struct echo {
+	int buffer_size;
+	char *buffer;
+	int length;
+} echo_t;
+
+static echo_t *echo_message;
+static struct cdev *echo_dev;
+
+static int
+echo_open(struct cdev *dev, int oflags, int devtype, struct thread *td)
+{
+	uprintf("Opening echo device.\n");
+	return (0);
+}
+
+static int
+echo_close(struct cdev *dev, int fflag, int devtype, struct thread *td)
+{
+	uprintf("Closing echo device.\n");
+	return (0);
+}
+
+static int
+echo_write(struct cdev *dev, struct uio *uio, int ioflag)
+{
+	int error = 0;
+	int amount;
+
+	amount = MIN(uio->uio_resid,
+	    (echo_message->buffer_size - 1 - uio->uio_offset > 0) ?
+	     echo_message->buffer_size - 1 - uio->uio_offset : 0);
+	if (amount == 0)
+		return (error);
+
+	error = uiomove(echo_message->buffer, amount, uio);
+	if (error != 0) {
+		uprintf("Write failed.\n");
+		return (error);
+	}
+
+	echo_message->buffer[amount] = '\0';
+	echo_message->length = amount;
+
+	return (error);
+}
+
+static int
+echo_read(struct cdev *dev, struct uio *uio, int ioflag)
+{
+	int error = 0;
+	int amount;
+
+	amount = MIN(uio->uio_resid,
+	    (echo_message->length - uio->uio_offset > 0) ?
+	     echo_message->length - uio->uio_offset : 0);
+
+	error = uiomove(echo_message->buffer + uio->uio_offset, amount, uio);
+	if (error != 0)
+		uprintf("Read failed.\n");
+
+	return (error);
+}
+
+static int
+echo_set_buffer_size(int size)
+{
+	int error = 0;
+
+	if (echo_message->buffer_size == size)
+		return (error);
+
+	if (size >= 128 && size <= 512) {
+		echo_message->buffer = realloc(echo_message->buffer, size,
+		    M_ECHO, M_WAITOK);
+		echo_message->buffer_size = size;
+
+		if (echo_message->length >= size) {
+			echo_message->length = size - 1;
+			echo_message->buffer[size - 1] = '\0';
+		}
+	} else
+		error = EINVAL;
+
+	return (error);
+}
+
+static int
+echo_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
+    struct thread *td)
+{
+	int error = 0;
+
+	switch (cmd) {
+	case ECHO_CLEAR_BUFFER:
+		memset(echo_message->buffer, '\0',
+		    echo_message->buffer_size);
+		echo_message->length = 0;
+		uprintf("Buffer cleared.\n");
+		break;
+	case ECHO_SET_BUFFER_SIZE:
+		error = echo_set_buffer_size(*(int *)data);
+		if (error == 0)
+			uprintf("Buffer resized.\n");
+		break;
+	default:
+		error = ENOTTY;
+		break;
+	}
+
+	return (error);
+}
+
+static int
+echo_modevent(module_t mod __unused, int event, void *arg __unused)
+{
+	int error = 0;
+
+	switch (event) {
+	case MOD_LOAD:
+		echo_message = malloc(sizeof(echo_t), M_ECHO, M_WAITOK);
+		echo_message->buffer_size = 256;
+		echo_message->buffer = malloc(echo_message->buffer_size,
+		    M_ECHO, M_WAITOK);
+		echo_dev = make_dev(&echo_cdevsw, 0, UID_ROOT, GID_WHEEL,
+		    0600, "echo");
+		uprintf("Echo driver loaded.\n");
+		break;
+	case MOD_UNLOAD:
+		destroy_dev(echo_dev);
+		free(echo_message->buffer, M_ECHO);
+		free(echo_message, M_ECHO);
+		uprintf("Echo driver unloaded.\n");
+		break;
+	default:
+		error = EOPNOTSUPP;
+		break;
+	}
+
+	return (error);
+}
+
+DEV_MODULE(echo, echo_modevent, NULL);
+@
+
+
+1.9
+log
+@Clean up echo_ioctl().
+@
+text
+@d1 30
+a30 1
+/* $Id: echo-3.0.c,v 1.8 2008/12/10 07:05:08 ghost Exp $ */
+@
+
+
+1.8
+log
+@Remove the space in the shortdesc argument.
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.7 2008/09/15 07:43:45 ghost Exp $ */
+d129 2
+a130 1
+		memset(echo_message->buffer, '\0', echo_message->buffer_size);
+@
+
+
+1.7
+log
+@Clean up echo_set_buffer_size().
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.6 2008/09/11 05:16:48 ghost Exp $ */
+d13 1
+a13 1
+MALLOC_DEFINE(M_ECHO, "echo buffer", "buffer for echo driver");
+@
+
+
+1.6
+log
+@Rewrite echo_write() to use uiomove() instead of copyin().
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.5 2008/07/15 04:36:27 ghost Exp $ */
+d111 3
+a113 4
+		if (echo_message->length >= echo_message->buffer_size) {
+			echo_message->length = echo_message->buffer_size - 1;
+			*(echo_message->buffer +
+			    echo_message->buffer_size - 1) = 0;
+@
+
+
+1.5
+log
+@Clean up source.
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.4 2008/07/12 20:57:53 ghost Exp $ */
+d61 1
+d63 7
+a69 2
+	error = copyin(uio->uio_iov->iov_base, echo_message->buffer,
+	    MIN(uio->uio_iov->iov_len, echo_message->buffer_size - 1));
+d75 2
+a76 5
+	*(echo_message->buffer +
+	    MIN(uio->uio_iov->iov_len, echo_message->buffer_size - 1)) = 0;
+
+	echo_message->length =
+	    MIN(uio->uio_iov->iov_len, echo_message->buffer_size - 1);
+@
+
+
+1.4
+log
+@Restructure and clean up source.
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.3 2008/07/12 02:41:21 ghost Exp $ */
+d113 1
+a113 4
+
+		uprintf("Buffer resized.\n");
+	}
+	else
+d133 2
+@
+
+
+1.3
+log
+@Add ioctl to resize buffer.
+@
+text
+@d1 1
+a1 1
+/* $Id: echo-3.0.c,v 1.2 2008/07/10 12:32:26 ghost Exp $ */
+d34 7
+a40 3
+static int buffer_size = 256;
+static char *message_buffer;
+static int message_length;
+d62 2
+a63 2
+	error = copyin(uio->uio_iov->iov_base, message_buffer,
+	    MIN(uio->uio_iov->iov_len, buffer_size - 1));
+d69 2
+a70 2
+	*(message_buffer +
+	    MIN(uio->uio_iov->iov_len, buffer_size - 1)) = 0;
+d72 2
+a73 1
+	message_length = MIN(uio->uio_iov->iov_len, buffer_size - 1);
+d85 2
+a86 2
+	    (message_length - uio->uio_offset > 0) ?
+	     message_length - uio->uio_offset : 0);
+d88 1
+a88 1
+	error = uiomove(message_buffer + uio->uio_offset, amount, uio);
+d100 1
+a100 1
+	if (buffer_size == size)
+d104 3
+a106 3
+		message_buffer = realloc(message_buffer, size, M_ECHO,
+		    M_WAITOK);
+		buffer_size = size;
+d108 4
+a111 3
+		if (message_length >= buffer_size) {
+			message_length = buffer_size - 1;
+			*(message_buffer + buffer_size - 1) = 0;
+d130 2
+a131 2
+		memset(message_buffer, '\0', buffer_size);
+		message_length = 0;
+d152 4
+a155 1
+		message_buffer = malloc(buffer_size, M_ECHO, M_WAITOK);
+d162 2
+a163 1
+		free(message_buffer, M_ECHO);
+@
+
+
+1.2
+log
+@Add ident string.
+@
+text
+@d1 1
+a1 1
+/* $Id$ */
+d13 1
+a13 1
+MALLOC_DEFINE(M_ECHO, "echo buffer", "Buffer for echo driver");
+a14 1
+#define BUFFER_SIZE		256
+d16 1
+d34 3
+a36 6
+typedef struct echo {
+	char buffer[BUFFER_SIZE];
+	int length;
+} echo_t;
+
+static echo_t *echo_message;
+d58 2
+a59 2
+	error = copyin(uio->uio_iov->iov_base, echo_message->buffer,
+	    MIN(uio->uio_iov->iov_len, BUFFER_SIZE - 1));
+d65 2
+a66 2
+	*(echo_message->buffer +
+	    MIN(uio->uio_iov->iov_len, BUFFER_SIZE - 1)) = 0;
+d68 1
+a68 1
+	echo_message->length = MIN(uio->uio_iov->iov_len, BUFFER_SIZE - 1);
+d80 2
+a81 2
+	    (echo_message->length - uio->uio_offset > 0) ?
+	     echo_message->length - uio->uio_offset : 0);
+d83 1
+a83 1
+	error = uiomove(echo_message->buffer + uio->uio_offset, amount, uio);
+d91 26
+d124 2
+a125 2
+		memset(echo_message->buffer, '\0', BUFFER_SIZE);
+		echo_message->length = 0;
+d128 3
+d132 1
+a132 1
+		error = EINVAL;
+d146 1
+a146 1
+		echo_message = malloc(sizeof(echo_t), M_ECHO, M_WAITOK);
+d153 1
+a153 1
+		free(echo_message, M_ECHO);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 2
+@
